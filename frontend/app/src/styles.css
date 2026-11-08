@@ -313,6 +313,23 @@ h2 {
   margin-bottom: 12px;
   overflow-wrap: anywhere;
 }
+.theme-group {
+  border: 1px solid #dfe5dd;
+  border-radius: 10px;
+  background: white;
+}
+.theme-group > summary {
+  margin: 0;
+  padding: 16px 20px;
+  cursor: pointer;
+  list-style-position: inside;
+}
+.theme-group[open] > summary {
+  border-bottom: 1px solid #edf0e9;
+}
+.theme-group > .todo-grid {
+  padding: 16px;
+}
 .todo-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
