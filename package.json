@@ -1,0 +1,26 @@
+{
+  "name": "ai-todo-planner-workshop",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "frontend/app",
+    "api/app"
+  ],
+  "engines": {
+    "node": ">=24.13.0 <25"
+  },
+  "scripts": {
+    "dev": "concurrently --kill-others --names api,web --prefix-colors cyan,magenta \"npm run dev -w api/app\" \"npm run dev -w frontend/app\"",
+    "typecheck": "npm run typecheck --workspaces",
+    "build": "npm run typecheck && npm run build -w frontend/app",
+    "test": "npm run test -w api/app",
+    "check": "npm run build && npm test",
+    "start": "npm run start -w api/app"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "concurrently": "^9.2.0",
+    "typescript": "~5.9.3"
+  }
+}
