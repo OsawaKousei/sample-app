@@ -22,13 +22,13 @@ const drafts: TodoDraft[] = [
   {
     title: "材料を調べる",
     description: "レシピを見て材料をメモする",
-    theme: "準備",
+    theme: "自炊を始める",
     priority: "high",
   },
   {
     title: "料理する",
     description: "簡単な料理を作ってみる",
-    theme: "実践",
+    theme: "自炊を始める",
     priority: "medium",
   },
 ];
@@ -146,6 +146,10 @@ test("サンプルでTODOを生成・保存し、通常のTODOと同じように
   assert.equal(result.mode, "mock");
   assert.equal(result.todos.length, 3);
   assert.ok(result.todos.every((todo: TodoInput) => todo.status === "todo"));
+  assert.deepEqual(
+    [...new Set(result.todos.map((todo: TodoInput) => todo.theme))],
+    ["自炊を始めたい"],
+  );
   assert.equal(store.list().length, 3);
   const todo = result.todos[0];
   const updated = await app.request(
@@ -201,6 +205,53 @@ test("AI入力の不備や失敗でTODOを追加せず、内部エラーを漏�
   assert.doesNotMatch(await response.text(), /secret-test-key/);
   assert.equal(calls, 1);
   assert.equal(store.list().length, 1);
+});
+
+test("残高不足・利用枠不足・認証エラーを区別し、内部情報を返さない", async (t) => {
+  const cases = [
+    {
+      status: 429,
+      code: "credit_balance_exhausted",
+      expected: /クレジット残高/,
+    },
+    { status: 429, code: "insufficient_quota", expected: /利用枠/ },
+    { status: 401, code: "invalid_api_key", expected: /キーの認証/ },
+    {
+      status: 429,
+      code: "rate_limit_exceeded",
+      expected: /AIでTODOを生成できませんでした/,
+    },
+  ];
+  for (const item of cases) {
+    let calls = 0;
+    const ai = createAiService({
+      apiKey: "secret-test-key",
+      model: "test",
+      fetch: async () => {
+        calls++;
+        return new Response(
+          JSON.stringify({
+            error: { code: item.code, message: "secret-test-key" },
+          }),
+          {
+            status: item.status,
+            headers: { "Content-Type": "application/json" },
+          },
+        );
+      },
+    });
+    const { app, store } = fixture(t, ai);
+    const response = await app.request(
+      "/api/todos/generate",
+      json({ goal: "学習したい" }),
+    );
+    assert.equal(response.status, 502);
+    const body = await response.json();
+    assert.match(body.error, item.expected);
+    assert.doesNotMatch(body.error, /secret-test-key/);
+    assert.equal(store.list().length, 0);
+    assert.equal(calls, 1);
+  }
 });
 
 test("文字数・生成件数・利用回数にアプリ独自の上限を設けない", async (t) => {
@@ -320,6 +371,12 @@ test("Responses APIにTODOのJSON形式を指定し、トークン上限を渡�
       assert.match(body.instructions, /TODO/);
       assert.equal(body.text.format.type, "json_schema");
       assert.equal(body.text.format.strict, true);
+      assert.deepEqual(body.text.format.schema.required, ["theme", "todos"]);
+      assert.equal(body.text.format.schema.properties.theme.type, "string");
+      assert.equal(
+        "theme" in body.text.format.schema.properties.todos.items.properties,
+        false,
+      );
       assert.deepEqual(
         body.text.format.schema.properties.todos.items.properties.priority.enum,
         ["high", "medium", "low"],
@@ -328,10 +385,66 @@ test("Responses APIにTODOのJSON形式を指定し、トークン上限を渡�
         "maxItems" in body.text.format.schema.properties.todos,
         false,
       );
-      return aiResponse(JSON.stringify({ todos: drafts }));
+      return aiResponse(
+        JSON.stringify({
+          theme: "自炊を始める",
+          todos: drafts.map(({ theme, ...todo }) => todo),
+        }),
+      );
     },
   });
   assert.deepEqual(await ai.generate("料理したい"), drafts);
+});
+
+test("入力ごとに要約テーマを1つ作り、その回のすべてのTODOへ保存する", async (t) => {
+  const plans = [
+    {
+      goal: "機械学習に入門してMNISTを解くNNを実装したい",
+      theme: "MNISTで学ぶニューラルネットワーク",
+    },
+    { goal: "来月から自炊を始めたい", theme: "初心者の自炊入門" },
+  ];
+  const ai = createAiService({
+    apiKey: "fake-key",
+    model: "test",
+    fetch: async (url, init) => {
+      const request = JSON.parse(init!.body as string);
+      const plan = plans.find((item) => item.goal === request.input)!;
+      return aiResponse(
+        JSON.stringify({
+          theme: plan.theme,
+          todos: [
+            {
+              title: "必要なものを調べる",
+              description: "準備するものを整理する",
+              priority: "high",
+            },
+            {
+              title: "実際に試す",
+              description: "小さく試して振り返る",
+              priority: "medium",
+            },
+          ],
+        }),
+      );
+    },
+  });
+  const { app, store } = fixture(t, ai);
+  for (const plan of plans) {
+    const response = await app.request(
+      "/api/todos/generate",
+      json({ goal: plan.goal }),
+    );
+    assert.equal(response.status, 201);
+    const { todos } = await response.json();
+    assert.equal(todos.length, 2);
+    assert.ok(todos.every((todo: TodoInput) => todo.theme === plan.theme));
+  }
+  const saved = store.list();
+  assert.equal(saved.length, 4);
+  for (const plan of plans) {
+    assert.equal(saved.filter((todo) => todo.theme === plan.theme).length, 2);
+  }
 });
 
 test("空・未完了・拒否の応答を成功とせず、API失敗時も再試行しない", async () => {

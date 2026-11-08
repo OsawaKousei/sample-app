@@ -79,7 +79,11 @@ AI生成の本文：
 
 ルートの `.env` は `server.ts` がNode.js標準の `loadEnvFile` で読みます。Viteは `.env` を読み込みません。`OPENAI_API_KEY` が空なら外部通信なしのサンプル、設定済みなら実APIです。失敗時のサンプル代用や自動再試行は行いません。
 
-Responses APIの `instructions` に行動へ分解する指示を、`input` に目標を渡します。`text.format` のJSON Schemaで、タイトル・説明・テーマ・優先度を持つ配列を指定します。`store: false` はOpenAI側のレスポンス保存に関する指定で、SQLiteへの保存とは別です。実装形式は [OpenAI公式のStructured Outputsガイド](https://developers.openai.com/api/docs/guides/structured-outputs) を参照しています。
+Responses APIの `instructions` に、入力全体を要約するテーマを1つ作り、行動をTODOへ分ける指示を渡します。`input` は目標です。`text.format` のJSON Schemaで、共通の `theme` と、タイトル・説明・優先度を持つ `todos` 配列を指定します。TODOごとのサブテーマは生成しません。受け取った共通テーマを全TODOへ設定して保存します。サンプルでは、入力の冒頭30文字を共通テーマとして使います。
+
+例えば「機械学習に入門してMNISTを解くNNを実装したい」という入力には、「MNISTで学ぶニューラルネットワーク」のようなテーマを作り、準備から実装までのTODOをまとめます。既存TODOのテーマはそのまま保持します。
+
+`store: false` はOpenAI側のレスポンス保存に関する指定で、SQLiteへの保存とは別です。実装形式は [OpenAI公式のStructured Outputsガイド](https://developers.openai.com/api/docs/guides/structured-outputs) を参照しています。
 
 ## 保存と表示
 

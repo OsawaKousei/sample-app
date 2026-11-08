@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
+import OpenAI from "openai";
 import { PRIORITIES, STATUSES } from "../../../shared/board.ts";
 import type { TodoInput } from "../../../shared/board.ts";
 import type { Store } from "./database.ts";
@@ -65,15 +66,23 @@ export function createApp({ store, ai }: { store: Store; ai: AiService }) {
     try {
       const drafts = await ai.generate(body.goal.trim());
       inputs = drafts.map((draft) => readTodo({ ...draft, status: "todo" }));
-    } catch {
+    } catch (error) {
       // APIキーやSDKの内部情報は画面に返しません。失敗時のサンプル代用もしません。
-      return c.json(
-        {
-          error:
-            "AIでTODOを生成できませんでした。APIキー・モデル・接続状況を確認してください。",
-        },
-        502,
-      );
+      let message =
+        "AIでTODOを生成できませんでした。APIキー・モデル・接続状況を確認してください。";
+      if (error instanceof OpenAI.APIError) {
+        if (error.code === "credit_balance_exhausted") {
+          message =
+            "OpenAI APIのクレジット残高が不足しています。プラットフォームの請求設定を確認してください。";
+        } else if (error.code === "insufficient_quota") {
+          message =
+            "OpenAI APIの利用枠が不足しています。プラットフォームの請求・利用設定を確認してください。";
+        } else if (error.status === 401) {
+          message =
+            "OpenAI APIキーの認証に失敗しました。.envのキーを確認し、サーバーを再起動してください。";
+        }
+      }
+      return c.json({ error: message }, 502);
     }
     return c.json({ todos: store.createMany(inputs), mode: ai.mode }, 201);
   });

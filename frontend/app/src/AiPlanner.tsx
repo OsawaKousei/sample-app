@@ -20,7 +20,7 @@ export function AiPlanner({ pending, generating, onGenerate }: Props) {
       <span className="eyebrow">小さな一歩を見つけよう</span>
       <h2 id="ai-title">AIとTODOをつくる</h2>
       <p>
-        やりたいことを伝えると、AIが具体的な行動に分けて、TODOに追加します。
+        やりたいことを伝えると、AIが内容を要約したテーマをつくり、その中にTODOを追加します。
       </p>
       <form onSubmit={submit}>
         <label htmlFor="goal">どんなことをしたいですか？</label>

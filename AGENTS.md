@@ -3,6 +3,7 @@
 全4回の初心者向け講義で使う「AI TODOプランナー」です。講座の要件は `docs/spec.md`、起動方法は `README.md`、実装の設計は `docs/architecture.md` を参照してください。
 
 - TODOの手動登録・編集・削除、AIによる生成、テーマ別・優先度別の表示、ステータス変更を提供します。
+- AI生成では、入力全体を要約したテーマを1つ作り、その回のすべてのTODOに設定します。入力内のサブテーマ分けはしません。
 - React + Vite + TypeScript、Hono + Node.js 24、SQLite、OpenAI Responses APIを使います。
 - `frontend/app` が画面、`api/app` がAPI、`shared/board.ts` が共通型と選択肢です。
 - 日本語で、初心者が読んで改造しやすい素直なコードを保ってください。過剰な抽象化・バリデーション・フォールバックは追加しません。
