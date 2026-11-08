@@ -258,20 +258,8 @@ export function App() {
                 </p>
               </div>
             ) : (
-              groups.map((group) => (
-                <section
-                  className="todo-group"
-                  key={group.name}
-                  aria-label={
-                    groupBy === "theme" ? group.label : `優先度：${group.label}`
-                  }
-                >
-                  <h3 className="group-heading">
-                    {groupBy === "priority"
-                      ? `優先度：${group.label}`
-                      : group.label}
-                    <span>{group.todos.length}</span>
-                  </h3>
+              groups.map((group) => {
+                const cards = (
                   <div className="todo-grid">
                     {group.todos.map((todo) => (
                       <TodoCard
@@ -287,8 +275,38 @@ export function App() {
                       />
                     ))}
                   </div>
-                </section>
-              ))
+                );
+
+                // detailsは、open属性を付けなければ最初は折りたたまれます。
+                if (groupBy === "theme") {
+                  return (
+                    <details
+                      className="todo-group theme-group"
+                      key={group.name}
+                    >
+                      <summary className="group-heading">
+                        {group.label}
+                        <span>{group.todos.length}件</span>
+                      </summary>
+                      {cards}
+                    </details>
+                  );
+                }
+
+                return (
+                  <section
+                    className="todo-group"
+                    key={group.name}
+                    aria-label={`優先度：${group.label}`}
+                  >
+                    <h3 className="group-heading">
+                      優先度：{group.label}
+                      <span>{group.todos.length}</span>
+                    </h3>
+                    {cards}
+                  </section>
+                );
+              })
             )}
           </section>
         </div>
