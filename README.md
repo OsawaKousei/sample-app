@@ -19,8 +19,8 @@ React + Vite + TypeScript / Hono + Node.js 24 / SQLite / OpenAI Responses APIを
 リポジトリを取得し、ルートへ移動します。URLは講師の案内に置き換えてください。
 
 ```sh
-git clone https://github.com/YOUR_NAME/ai-idea-board.git
-cd ai-idea-board
+git clone https://github.com/OsawaKousei/sample-app.git
+cd sample-app
 ```
 
 `.env.example` をコピーして `.env` を作ります。以下のコマンドはWindowsとmacOSで共通です。既に `.env` がある場合はコピーせず、その設定を使ってください。
