@@ -1,5 +1,5 @@
 {
-  "name": "@idea-board/api",
+  "name": "@todo-planner/api",
   "version": "1.0.0",
   "private": true,
   "type": "module",
@@ -11,7 +11,6 @@
   },
   "dependencies": {
     "@hono/node-server": "^2.1.6",
-    "dotenv": "^17.2.0",
     "hono": "^4.10.0",
     "openai": "^6.9.0"
   }

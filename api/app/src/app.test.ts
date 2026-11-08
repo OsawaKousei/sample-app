@@ -4,359 +4,370 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { openStore } from "./database.ts";
 import { createApp } from "./app.ts";
 import { createAiService } from "./ai.ts";
 import type { AiService } from "./ai.ts";
-import type { Card, CardInput } from "../../../shared/board.ts";
+import type { TodoDraft, TodoInput } from "../../../shared/board.ts";
 
-const input: CardInput = {
-  title: "週末の散歩",
-  description: "近所の公園で本を読む",
-  category: "暮らし",
-  status: "アイデア",
+const input: TodoInput = {
+  title: "本を読む",
+  description: "気になる本を1冊選ぶ",
+  theme: "学習",
+  priority: "high",
+  status: "todo",
 };
-const json = (method: string, body: unknown): RequestInit => ({
-  method,
-  headers: { "Content-Type": "application/json" },
-  body: JSON.stringify(body),
-});
-
-function fixture(t: TestContext, ai?: AiService) {
-  const store = openStore(":memory:", false);
+const drafts: TodoDraft[] = [
+  {
+    title: "材料を調べる",
+    description: "レシピを見て材料をメモする",
+    theme: "準備",
+    priority: "high",
+  },
+  {
+    title: "料理する",
+    description: "簡単な料理を作ってみる",
+    theme: "実践",
+    priority: "medium",
+  },
+];
+function json(body: unknown, method = "POST"): RequestInit {
+  return {
+    method,
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  };
+}
+function fixture(t: TestContext, ai = createAiService({ model: "test" })) {
+  const store = openStore(":memory:");
   t.after(() => store.close());
-  const service =
-    ai ||
-    createAiService({ mode: "mock", model: "unused", maxOutputTokens: 800 });
-  return { store, app: createApp({ store, ai: service, dailyLimit: 2 }) };
+  return { store, app: createApp({ store, ai }) };
+}
+function temporaryDatabase(t: TestContext) {
+  const directory = mkdtempSync(join(tmpdir(), "todo-planner-test-"));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  return join(directory, "planner.sqlite");
+}
+// SDKへの応答だけを偽装します。外部へ通信しません。
+function aiResponse(text: string, status = "completed") {
+  return new Response(
+    JSON.stringify({
+      id: "resp_test",
+      object: "response",
+      status,
+      output: [
+        {
+          type: "message",
+          role: "assistant",
+          content: [{ type: "output_text", text, annotations: [] }],
+        },
+      ],
+    }),
+    { headers: { "Content-Type": "application/json" } },
+  );
 }
 
-test("CRUD・日本語検索・カテゴリとステータスの複合フィルタ", async (t) => {
+test("TODOの登録・一覧・編集・ステータス変更・削除ができる", async (t) => {
   const { app } = fixture(t);
-  const created = await app.request("/api/cards", json("POST", input));
-  assert.equal(created.status, 201);
-  const { card } = (await created.json()) as { card: Card };
-  assert.equal(card.title, input.title);
-  assert.ok(card.id);
-  assert.equal((await app.request(`/api/cards/${card.id}`)).status, 200);
-  const updated = await app.request(
-    `/api/cards/${card.id}`,
-    json("PUT", { ...input, status: "進行中" }),
+  assert.deepEqual(await (await app.request("/api/todos")).json(), {
+    todos: [],
+  });
+  const response = await app.request(
+    "/api/todos",
+    json({ ...input, title: "  本を読む  " }),
   );
-  assert.equal((await updated.json()).card.status, "進行中");
-  const matches = await app.request(
-    `/api/cards?q=${encodeURIComponent("公園")}&category=${encodeURIComponent("暮らし")}&status=${encodeURIComponent("進行中")}`,
-  );
-  assert.equal((await matches.json()).cards.length, 1);
-  assert.equal(
-    (await (await app.request("/api/cards?q=nonexistent")).json()).cards.length,
-    0,
-  );
-  assert.equal(
-    (await app.request(`/api/cards/${card.id}`, { method: "DELETE" })).status,
-    204,
-  );
-  for (const method of ["GET", "PUT", "DELETE", "POST"]) {
-    const path =
-      method === "POST"
-        ? `/api/cards/${card.id}/analyze`
-        : `/api/cards/${card.id}`;
-    assert.equal(
-      (
-        await app.request(
-          path,
-          method === "PUT" ? json("PUT", input) : { method },
-        )
-      ).status,
-      404,
+  assert.equal(response.status, 201);
+  const { todo } = await response.json();
+  assert.equal(todo.title, "本を読む");
+  assert.ok(todo.id);
+  assert.ok(todo.createdAt);
+  const path = `/api/todos/${todo.id}`;
+  for (const status of ["doing", "done"]) {
+    const updated = await app.request(
+      path,
+      json({ ...input, title: "O'Reillyの本を読む", status }, "PUT"),
     );
+    assert.equal(updated.status, 200);
+    assert.equal((await updated.json()).todo.status, status);
   }
+  await app.request("/api/todos", json({ ...input, title: "次のTODO" }));
+  const { todos } = await (await app.request("/api/todos")).json();
+  assert.equal(todos.length, 2);
+  assert.equal(todos[0].title, "次のTODO");
+  assert.equal(todos[1].title, "O'Reillyの本を読む");
+  assert.equal((await app.request(path, { method: "DELETE" })).status, 204);
+  assert.equal(
+    (await (await app.request("/api/todos")).json()).todos.length,
+    1,
+  );
+  assert.equal((await app.request(path, json(input, "PUT"))).status, 404);
+  assert.equal((await app.request(path, { method: "DELETE" })).status, 404);
+  assert.equal((await app.request("/api/unknown")).status, 404);
+  assert.deepEqual(await (await app.request("/healthz")).json(), {
+    status: "ok",
+  });
 });
 
-test("空白・型・長さ・列挙値・壊れたJSONを拒否する", async (t) => {
-  const { app } = fixture(t);
-  const invalid = [
+test("必須項目と選択肢、不正JSONを確認し、未入力の説明は許可する", async (t) => {
+  const { app, store } = fixture(t);
+  for (const body of [
     null,
-    [],
     {},
     { ...input, title: "  " },
-    { ...input, title: 2 },
-    { ...input, title: "a".repeat(121) },
+    { ...input, title: 123 },
+    { ...input, theme: "" },
+    { ...input, priority: "urgent" },
+    { ...input, status: "unknown" },
     { ...input, description: null },
-    { ...input, description: "a".repeat(4001) },
-    { ...input, category: "不正" },
-    { ...input, status: "不正" },
-  ];
-  for (const body of invalid)
-    assert.equal(
-      (await app.request("/api/cards", json("POST", body))).status,
-      400,
-    );
+  ]) {
+    assert.equal((await app.request("/api/todos", json(body))).status, 400);
+  }
   assert.equal(
-    (await app.request("/api/cards", { method: "POST", body: "{bad json" }))
-      .status,
+    (await app.request("/api/todos", { method: "POST", body: "{bad" })).status,
     400,
   );
-  const res = await app.request(
-    "/api/cards",
-    json("POST", { ...input, title: "  test  " }),
+  assert.equal(store.list().length, 0);
+  assert.equal(
+    (await app.request("/api/todos", json({ ...input, description: "" })))
+      .status,
+    201,
   );
-  assert.equal((await res.json()).card.title, "test");
 });
 
-test("SQLiteの永続化・初回データ・全件削除後に再投入しない", () => {
-  const directory = mkdtempSync(join(tmpdir(), "idea-board-test-"));
-  const path = join(directory, "nested", "board.sqlite");
+test("サンプルでTODOを生成・保存し、通常のTODOと同じように編集できる", async (t) => {
+  const { app, store } = fixture(t);
+  const response = await app.request(
+    "/api/todos/generate",
+    json({ goal: "自炊を始めたい" }),
+  );
+  assert.equal(response.status, 201);
+  const result = await response.json();
+  assert.equal(result.mode, "mock");
+  assert.equal(result.todos.length, 3);
+  assert.ok(result.todos.every((todo: TodoInput) => todo.status === "todo"));
+  assert.equal(store.list().length, 3);
+  const todo = result.todos[0];
+  const updated = await app.request(
+    `/api/todos/${todo.id}`,
+    json({ ...todo, status: "done" }, "PUT"),
+  );
+  assert.equal((await updated.json()).todo.status, "done");
+});
+
+test("偽のAI応答を未着手TODOとしてまとめて保存する", async (t) => {
+  const { app, store } = fixture(t, {
+    mode: "openai",
+    generate: async (goal) => {
+      assert.equal(goal, "料理したい");
+      return drafts;
+    },
+  });
+  const response = await app.request(
+    "/api/todos/generate",
+    json({ goal: " 料理したい " }),
+  );
+  assert.equal(response.status, 201);
+  assert.equal((await response.json()).mode, "openai");
+  assert.deepEqual(
+    store.list().map(({ id, createdAt, ...todo }) => todo),
+    [...drafts].reverse().map((draft) => ({ ...draft, status: "todo" })),
+  );
+});
+
+test("AI入力の不備や失敗でTODOを追加せず、内部エラーを漏らさない", async (t) => {
+  let calls = 0;
+  const ai: AiService = {
+    mode: "openai",
+    generate: async () => {
+      calls++;
+      throw new Error("secret-test-key");
+    },
+  };
+  const { app, store } = fixture(t, ai);
+  store.create(input);
+  for (const body of [null, {}, { goal: " " }, { goal: 123 }]) {
+    assert.equal(
+      (await app.request("/api/todos/generate", json(body))).status,
+      400,
+    );
+  }
+  assert.equal(calls, 0);
+  const response = await app.request(
+    "/api/todos/generate",
+    json({ goal: "料理したい" }),
+  );
+  assert.equal(response.status, 502);
+  assert.doesNotMatch(await response.text(), /secret-test-key/);
+  assert.equal(calls, 1);
+  assert.equal(store.list().length, 1);
+});
+
+test("文字数・生成件数・利用回数にアプリ独自の上限を設けない", async (t) => {
+  const { app, store } = fixture(t, {
+    mode: "openai",
+    generate: async () => Array.from({ length: 30 }, () => drafts[0]),
+  });
+  const title = "あ".repeat(40000);
+  assert.equal(
+    (await app.request("/api/todos", json({ ...input, title }))).status,
+    201,
+  );
+  assert.equal(store.list()[0].title, title);
+  for (let i = 0; i < 3; i++) {
+    assert.equal(
+      (await app.request("/api/todos/generate", json({ goal: title }))).status,
+      201,
+    );
+  }
+  assert.equal(store.list().length, 91);
+});
+
+test("再起動後もTODOの編集と削除が保持される", (t) => {
+  const path = temporaryDatabase(t);
   let store = openStore(path);
   try {
-    assert.equal(store.list().length, 6);
-    store.list().forEach((card) => store.remove(card.id));
-    const card = store.create(input);
-    store.saveAnalysis(card, "保存した結果", "mock");
+    const first = store.create(input);
+    const second = store.create(input);
+    store.update(first.id, { ...input, title: "編集したTODO", status: "done" });
+    store.remove(second.id);
     store.close();
     store = openStore(path);
     assert.equal(store.list().length, 1);
-    assert.equal(store.get(card.id)?.analysis, "保存した結果");
-    store.remove(card.id);
-    store.close();
-    store = openStore(path);
-    assert.equal(store.list().length, 0);
+    assert.equal(store.get(first.id)?.title, "編集したTODO");
+    assert.equal(store.get(first.id)?.status, "done");
   } finally {
     store.close();
-    rmSync(directory, { recursive: true, force: true });
   }
 });
 
-test("モック分析を保存し、本文変更時は古い分析を無効にする", async (t) => {
-  const { app, store } = fixture(t);
-  const card = store.create(input);
-  const response = await app.request(`/api/cards/${card.id}/analyze`, {
-    method: "POST",
-  });
-  assert.equal(response.status, 200);
-  const saved = (await response.json()).card as Card;
-  assert.match(saved.analysis!, /サンプル応答/);
-  assert.equal(saved.analysisMode, "mock");
-  assert.ok(saved.analyzedAt);
-  const classified = store.update(card.id, { ...input, status: "完了" });
-  assert.equal(classified.analysis, saved.analysis);
-  const edited = store.update(card.id, { ...input, description: "新しい説明" });
-  assert.equal(edited.analysis, null);
-  assert.equal(edited.analyzedAt, null);
-});
-
-test("AI未設定・無効でもCRUDは利用できる", async (t) => {
-  for (const mode of ["openai", "disabled"] as const) {
-    const ai = createAiService({ mode, model: "test", maxOutputTokens: 800 });
-    const { app, store } = fixture(t, ai);
-    const card = store.create(input);
-    assert.equal(
-      (await app.request(`/api/cards/${card.id}/analyze`, { method: "POST" }))
-        .status,
-      503,
-    );
-    assert.equal(
-      (await app.request("/api/cards", json("POST", input))).status,
-      201,
-    );
-    const config = await (await app.request("/api/config")).json();
-    assert.equal(config.aiAvailable, false);
-    assert.equal(config.apiKey, undefined);
-  }
-});
-
-test("AI失敗時もCRUDと既存分析を保持し、失敗を含む日次上限を適用", async (t) => {
-  let calls = 0;
-  const { app, store } = fixture(t, {
-    mode: "openai",
-    available: true,
-    analyze: async () => {
-      calls++;
-      throw new Error("secret-key");
-    },
-  });
-  const card = store.create(input);
-  store.saveAnalysis(card, "以前の結果", "openai");
+test("既存のideas・cardsテーブルとデータを保持してTODOを追加する", (t) => {
+  const path = temporaryDatabase(t);
+  const old = new DatabaseSync(path);
+  old.exec(`CREATE TABLE ideas (id TEXT PRIMARY KEY, idea TEXT, suggestion TEXT);
+    INSERT INTO ideas VALUES ('idea-1', '以前の相談', '以前の提案');
+    CREATE TABLE cards (id TEXT PRIMARY KEY, title TEXT, description TEXT);
+    INSERT INTO cards VALUES ('card-1', '以前のカード', '以前の説明');`);
+  old.close();
   for (let i = 0; i < 2; i++) {
-    const response = await app.request(`/api/cards/${card.id}/analyze`, {
-      method: "POST",
-    });
-    assert.equal(response.status, 502);
-    assert.doesNotMatch(await response.text(), /secret-key/);
+    const store = openStore(path);
+    try {
+      if (i === 0) store.create(input);
+      assert.equal(store.list().length, 1);
+    } finally {
+      store.close();
+    }
   }
-  assert.equal(
-    (await app.request(`/api/cards/${card.id}/analyze`, { method: "POST" }))
-      .status,
-    429,
-  );
-  assert.equal(calls, 2);
-  assert.equal(store.get(card.id)?.analysis, "以前の結果");
-  assert.equal(
-    (await app.request("/api/cards", json("POST", input))).status,
-    201,
-  );
-});
-
-test("日次上限はSQLiteの再オープン後も残り、UTCの翌日は新しい枠になる", () => {
-  const directory = mkdtempSync(join(tmpdir(), "idea-budget-test-"));
-  const path = join(directory, "board.sqlite");
-  let store = openStore(path, false);
+  const db = new DatabaseSync(path);
   try {
-    assert.equal(store.reserveAiAttempt(1, "2026-11-08"), true);
-    store.close();
-    store = openStore(path, false);
-    assert.equal(store.reserveAiAttempt(1, "2026-11-08"), false);
-    assert.equal(store.reserveAiAttempt(1, "2026-11-09"), true);
+    assert.equal(
+      db.prepare("SELECT suggestion FROM ideas").get()!.suggestion,
+      "以前の提案",
+    );
+    assert.equal(
+      db.prepare("SELECT description FROM cards").get()!.description,
+      "以前の説明",
+    );
   } finally {
-    store.close();
-    rmSync(directory, { recursive: true, force: true });
+    db.close();
   }
 });
 
-test("二重分析を拒否し、分析待ちの間に編集された結果を保存しない", async (t) => {
-  const started = Promise.withResolvers<void>();
-  const generated = Promise.withResolvers<string>();
-  const { app, store } = fixture(t, {
-    mode: "mock",
-    available: true,
-    analyze: async () => {
-      started.resolve();
-      return generated.promise;
-    },
-  });
-  const card = store.create(input);
-  const first = app.request(`/api/cards/${card.id}/analyze`, {
-    method: "POST",
-  });
-  await started.promise;
-  assert.equal(
-    (await app.request(`/api/cards/${card.id}/analyze`, { method: "POST" }))
-      .status,
-    409,
-  );
-  store.update(card.id, { ...input, title: "変更されたカード" });
-  generated.resolve("古い内容の結果");
-  assert.equal((await first).status, 409);
-  assert.equal(store.get(card.id)?.analysis, null);
-});
-
-test("巨大な入力と別Originからの更新を拒否し、未知のAPIはJSON 404", async (t) => {
-  const { app } = fixture(t);
-  assert.equal(
-    (
-      await app.request(
-        "/api/cards",
-        json("POST", { ...input, description: "a".repeat(40000) }),
-      )
-    ).status,
-    413,
-  );
-  assert.equal(
-    (
-      await app.request("/api/cards", {
-        ...json("POST", input),
-        headers: {
-          "Content-Type": "application/json",
-          Origin: "https://untrusted.example",
-        },
-      })
-    ).status,
-    403,
-  );
-  assert.equal(
-    (
-      await app.request("/api/cards", {
-        ...json("POST", input),
-        headers: {
-          "Content-Type": "application/json",
-          Origin: "http://localhost:5173",
-        },
-      })
-    ).status,
-    201,
-  );
-  assert.equal((await app.request("/api/unknown")).status, 404);
-});
-
-test("Responses APIの送信内容とoutput_text取得をSDK経由で検証（通信なし）", async (t) => {
+test("複数TODOの保存が途中で失敗したら全件取り消す", (t) => {
   const { store } = fixture(t);
-  const card = store.create(input);
-  let calls = 0;
-  const service = createAiService({
-    mode: "openai",
-    apiKey: "test-key-not-real",
+  store.create(input);
+  assert.throws(() =>
+    store.createMany([
+      input,
+      { ...input, title: null } as unknown as TodoInput,
+    ]),
+  );
+  assert.equal(store.list().length, 1);
+  // ロールバック後にも保存できます。
+  store.create(input);
+  assert.equal(store.list().length, 2);
+});
+
+test("キー未設定なら外部通信せず、キーがあれば実APIを選ぶ", async () => {
+  for (const apiKey of [undefined, "", "   "]) {
+    const ai = createAiService({
+      apiKey,
+      model: "test",
+      fetch: async () => {
+        throw new Error("外部通信は禁止");
+      },
+    });
+    assert.equal(ai.mode, "mock");
+    assert.ok((await ai.generate("旅行したい")).length > 0);
+  }
+  assert.equal(
+    createAiService({ apiKey: "fake-key", model: "test" }).mode,
+    "openai",
+  );
+});
+
+test("Responses APIにTODOのJSON形式を指定し、トークン上限を渡さない", async () => {
+  const ai = createAiService({
+    apiKey: "fake-key",
     model: "workshop-model",
-    maxOutputTokens: 700,
     fetch: async (url, init) => {
-      calls++;
       assert.equal(String(url), "https://api.openai.com/v1/responses");
       const body = JSON.parse(init!.body as string);
       assert.equal(body.model, "workshop-model");
+      assert.equal(body.input, "料理したい");
       assert.equal(body.store, false);
-      assert.equal(body.max_output_tokens, 700);
-      assert.equal(JSON.parse(body.input).title, input.title);
-      assert.match(body.instructions, /最初の一歩/);
-      return new Response(
-        JSON.stringify({
-          id: "resp_test",
-          object: "response",
-          status: "completed",
-          output: [
-            {
-              type: "message",
-              role: "assistant",
-              content: [
-                {
-                  type: "output_text",
-                  text: "アイデアの提案",
-                  annotations: [],
-                },
-              ],
-            },
-          ],
-        }),
-        { headers: { "Content-Type": "application/json" } },
+      assert.equal("max_output_tokens" in body, false);
+      assert.match(body.instructions, /TODO/);
+      assert.equal(body.text.format.type, "json_schema");
+      assert.equal(body.text.format.strict, true);
+      assert.deepEqual(
+        body.text.format.schema.properties.todos.items.properties.priority.enum,
+        ["high", "medium", "low"],
       );
+      assert.equal(
+        "maxItems" in body.text.format.schema.properties.todos,
+        false,
+      );
+      return aiResponse(JSON.stringify({ todos: drafts }));
     },
   });
-  assert.equal(await service.analyze(card), "アイデアの提案");
-  assert.equal(calls, 1);
+  assert.deepEqual(await ai.generate("料理したい"), drafts);
 });
 
-test("OpenAIの失敗を自動再試行せず、未完了応答も保存しない", async (t) => {
-  const { store } = fixture(t);
+test("空・未完了・拒否の応答を成功とせず、API失敗時も再試行しない", async () => {
+  for (const response of [
+    aiResponse(""),
+    aiResponse('{"todos":[]}', "incomplete"),
+    aiResponse('{"todos":[]}'),
+    new Response(
+      JSON.stringify({
+        status: "completed",
+        output: [
+          { type: "message", content: [{ type: "refusal", refusal: "拒否" }] },
+        ],
+      }),
+      { headers: { "Content-Type": "application/json" } },
+    ),
+  ]) {
+    const ai = createAiService({
+      apiKey: "fake-key",
+      model: "test",
+      fetch: async () => response,
+    });
+    await assert.rejects(ai.generate("料理したい"));
+  }
   let calls = 0;
-  const service = createAiService({
-    mode: "openai",
-    apiKey: "test-key",
+  const ai = createAiService({
+    apiKey: "fake-key",
     model: "test",
-    maxOutputTokens: 800,
     fetch: async () => {
       calls++;
-      return new Response(
-        JSON.stringify({
-          error: { message: "quota", type: "rate_limit_error" },
-        }),
-        { status: 429, headers: { "Content-Type": "application/json" } },
-      );
+      return new Response('{"error":{"message":"失敗"}}', {
+        status: 500,
+        headers: { "Content-Type": "application/json" },
+      });
     },
   });
-  await assert.rejects(service.analyze(store.create(input)));
+  await assert.rejects(ai.generate("料理したい"));
   assert.equal(calls, 1);
-  const incomplete = createAiService({
-    mode: "openai",
-    apiKey: "test-key",
-    model: "test",
-    maxOutputTokens: 800,
-    fetch: async () =>
-      new Response(
-        JSON.stringify({
-          object: "response",
-          status: "incomplete",
-          output: [],
-        }),
-        { headers: { "Content-Type": "application/json" } },
-      ),
-  });
-  await assert.rejects(incomplete.analyze(store.create(input)), /incomplete/);
 });

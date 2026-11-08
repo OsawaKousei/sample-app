@@ -1,5 +1,5 @@
 {
-  "name": "ai-idea-board-workshop",
+  "name": "ai-todo-planner-workshop",
   "version": "1.0.0",
   "private": true,
   "type": "module",
@@ -12,7 +12,6 @@
   },
   "scripts": {
     "dev": "concurrently --kill-others --names api,web --prefix-colors cyan,magenta \"npm run dev -w api/app\" \"npm run dev -w frontend/app\"",
-    "setup:local": "node scripts/setup-local.mjs",
     "typecheck": "npm run typecheck --workspaces",
     "build": "npm run typecheck && npm run build -w frontend/app",
     "test": "npm run test -w api/app",

@@ -1,202 +1,93 @@
 import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
-import { bodyLimit } from "hono/body-limit";
-import { CATEGORIES, STATUSES } from "../../../shared/board.ts";
-import type { CardInput } from "../../../shared/board.ts";
+import { PRIORITIES, STATUSES } from "../../../shared/board.ts";
+import type { TodoInput } from "../../../shared/board.ts";
 import type { Store } from "./database.ts";
 import type { AiService } from "./ai.ts";
 
-function validateCard(value: unknown): CardInput {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new HTTPException(400, {
-      message: "カードの形式が正しくありません。",
-    });
-  }
-  const input = value as Record<string, unknown>;
+// 必須項目と選択肢だけを確認します。文字数や利用回数の制限は設けません。
+function readTodo(body: TodoInput | null): TodoInput {
   if (
-    typeof input.title !== "string" ||
-    !input.title.trim() ||
-    input.title.trim().length > 120
+    !body ||
+    typeof body.title !== "string" ||
+    !body.title.trim() ||
+    typeof body.description !== "string" ||
+    typeof body.theme !== "string" ||
+    !body.theme.trim() ||
+    !PRIORITIES.includes(body.priority) ||
+    !STATUSES.includes(body.status)
   ) {
     throw new HTTPException(400, {
-      message: "タイトルは1〜120文字で入力してください。",
-    });
-  }
-  if (
-    typeof input.description !== "string" ||
-    input.description.length > 4000
-  ) {
-    throw new HTTPException(400, {
-      message: "説明は4,000文字以内で入力してください。",
-    });
-  }
-  if (
-    !CATEGORIES.includes(input.category as CardInput["category"]) ||
-    !STATUSES.includes(input.status as CardInput["status"])
-  ) {
-    throw new HTTPException(400, {
-      message: "カテゴリまたはステータスが正しくありません。",
+      message: "タイトル・テーマ・優先度・ステータスを確認してください。",
     });
   }
   return {
-    title: input.title.trim(),
-    description: input.description.trim(),
-    category: input.category as CardInput["category"],
-    status: input.status as CardInput["status"],
+    title: body.title.trim(),
+    description: body.description.trim(),
+    theme: body.theme.trim(),
+    priority: body.priority,
+    status: body.status,
   };
 }
 
-export function createApp(options: {
-  store: Store;
-  ai: AiService;
-  dailyLimit: number;
-}) {
-  const { store, ai, dailyLimit } = options;
+export function createApp({ store, ai }: { store: Store; ai: AiService }) {
   const app = new Hono();
-  const pending = new Set<string>();
-
-  app.use(
-    "/api/*",
-    bodyLimit({
-      maxSize: 32 * 1024,
-      onError: (c) => c.json({ error: "送信データが大きすぎます。" }, 413),
-    }),
-  );
-  app.use("/api/*", async (c, next) => {
-    const origin = c.req.header("Origin");
-    if (
-      !["GET", "HEAD", "OPTIONS"].includes(c.req.method) &&
-      origin &&
-      ![
-        "http://127.0.0.1:5173",
-        "http://localhost:5173",
-        new URL(c.req.url).origin,
-      ].includes(origin)
-    ) {
-      return c.json(
-        { error: "この接続元からの更新は許可されていません。" },
-        403,
-      );
-    }
-    await next();
-  });
 
   app.get("/healthz", (c) => c.json({ status: "ok" }));
-  app.get("/api/config", (c) =>
-    c.json({ aiMode: ai.mode, aiAvailable: ai.available, dailyLimit }),
-  );
-  app.get("/api/cards", (c) => {
-    const q = (c.req.query("q") || "").toLocaleLowerCase();
-    const category = c.req.query("category");
-    const status = c.req.query("status");
-    return c.json({
-      cards: store
-        .list()
-        .filter(
-          (card) =>
-            (!q ||
-              `${card.title}\n${card.description}`
-                .toLocaleLowerCase()
-                .includes(q)) &&
-            (!category || card.category === category) &&
-            (!status || card.status === status),
-        ),
-    });
+  app.get("/api/todos", (c) => c.json({ todos: store.list() }));
+
+  app.post("/api/todos", async (c) => {
+    const input = readTodo(await c.req.json());
+    return c.json({ todo: store.create(input) }, 201);
   });
 
-  app.get("/api/cards/:id", (c) => {
-    const card = store.get(c.req.param("id"));
-    if (!card) return c.json({ error: "カードが見つかりません。" }, 404);
-    return c.json({ card });
+  app.put("/api/todos/:id", async (c) => {
+    const input = readTodo(await c.req.json());
+    const todo = store.update(c.req.param("id"), input);
+    if (!todo) return c.json({ error: "TODOが見つかりません。" }, 404);
+    return c.json({ todo });
   });
-  app.post("/api/cards", async (c) => {
-    const input = validateCard(
-      await c.req.json().catch(() => {
-        throw new HTTPException(400, {
-          message: "JSONの形式が正しくありません。",
-        });
-      }),
-    );
-    return c.json({ card: store.create(input) }, 201);
-  });
-  app.put("/api/cards/:id", async (c) => {
-    const id = c.req.param("id");
-    if (!store.get(id))
-      return c.json({ error: "カードが見つかりません。" }, 404);
-    const input = validateCard(
-      await c.req.json().catch(() => {
-        throw new HTTPException(400, {
-          message: "JSONの形式が正しくありません。",
-        });
-      }),
-    );
-    return c.json({ card: store.update(id, input) });
-  });
-  app.delete("/api/cards/:id", (c) => {
-    if (!store.remove(c.req.param("id")))
-      return c.json({ error: "カードが見つかりません。" }, 404);
+
+  app.delete("/api/todos/:id", (c) => {
+    if (!store.remove(c.req.param("id"))) {
+      return c.json({ error: "TODOが見つかりません。" }, 404);
+    }
     return c.body(null, 204);
   });
 
-  app.post("/api/cards/:id/analyze", async (c) => {
-    const card = store.get(c.req.param("id"));
-    if (!card) return c.json({ error: "カードが見つかりません。" }, 404);
-    if (!ai.available || ai.mode === "disabled")
-      return c.json(
-        { error: "AI機能は未設定です。カードの登録・編集はそのまま使えます。" },
-        503,
-      );
-    if (pending.has(card.id))
-      return c.json(
-        { error: "このカードを分析中です。少し待ってください。" },
-        409,
-      );
-    if (ai.mode === "openai" && !store.reserveAiAttempt(dailyLimit)) {
-      return c.json(
-        {
-          error:
-            "本日のAI利用回数の上限に達しました。カードの登録・編集は引き続き使えます。",
-        },
-        429,
-      );
+  app.post("/api/todos/generate", async (c) => {
+    const body = await c.req.json<{ goal?: string } | null>();
+    if (typeof body?.goal !== "string" || !body.goal.trim()) {
+      return c.json({ error: "やりたいことを入力してください。" }, 400);
     }
-    pending.add(card.id);
+
+    let inputs: TodoInput[];
     try {
-      const text = await ai.analyze(card);
-      const saved = store.saveAnalysis(
-        card,
-        text,
-        ai.mode as "mock" | "openai",
-      );
-      if (!saved)
-        return c.json(
-          {
-            error:
-              "分析中にカードが変更されました。最新のカードでやり直してください。",
-          },
-          409,
-        );
-      return c.json({ card: saved });
+      const drafts = await ai.generate(body.goal.trim());
+      inputs = drafts.map((draft) => readTodo({ ...draft, status: "todo" }));
     } catch {
-      // SDKのエラー本文には機密情報が含まれ得るため、そのまま返さない。
+      // APIキーやSDKの内部情報は画面に返しません。失敗時のサンプル代用もしません。
       return c.json(
         {
           error:
-            "AIに接続できませんでした。APIキー・利用枠・モデル設定を確認し、少し待ってから再試行してください。カードは保存されています。",
+            "AIでTODOを生成できませんでした。APIキー・モデル・接続状況を確認してください。",
         },
         502,
       );
-    } finally {
-      pending.delete(card.id);
     }
+    return c.json({ todos: store.createMany(inputs), mode: ai.mode }, 201);
   });
 
   app.onError((error, c) => {
     if (error instanceof HTTPException)
       return c.json({ error: error.message }, error.status);
-    console.error("APIで予期しないエラーが発生しました。");
+    if (error instanceof SyntaxError)
+      return c.json({ error: "JSONの形式を確認してください。" }, 400);
     return c.json(
-      { error: "処理に失敗しました。時間をおいて再試行してください。" },
+      {
+        error:
+          "データの読み書きに失敗しました。APIの起動と保存先を確認してください。",
+      },
       500,
     );
   });

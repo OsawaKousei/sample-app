@@ -1,34 +1,33 @@
-// フロントエンドとAPIで共有する選択肢・データの形。
-export const CATEGORIES = [
-  "アプリ",
-  "暮らし",
-  "学び",
-  "仕事",
-  "その他",
-] as const;
-export const STATUSES = ["アイデア", "進行中", "完了"] as const;
-export type Category = (typeof CATEGORIES)[number];
-export type Status = (typeof STATUSES)[number];
-export type AiMode = "mock" | "openai" | "disabled";
+// 画面とAPIで同じ選択肢・型を使います。
+export const PRIORITIES = ["high", "medium", "low"] as const;
+export const STATUSES = ["todo", "doing", "done"] as const;
 
-export interface CardInput {
+export type Priority = (typeof PRIORITIES)[number];
+export type Status = (typeof STATUSES)[number];
+
+export const PRIORITY_LABELS: Record<Priority, string> = {
+  high: "高",
+  medium: "中",
+  low: "低",
+};
+export const STATUS_LABELS: Record<Status, string> = {
+  todo: "未着手",
+  doing: "進行中",
+  done: "完了",
+};
+
+export interface TodoDraft {
   title: string;
   description: string;
-  category: Category;
+  theme: string;
+  priority: Priority;
+}
+
+export interface TodoInput extends TodoDraft {
   status: Status;
 }
 
-export interface Card extends CardInput {
+export interface Todo extends TodoInput {
   id: string;
   createdAt: string;
-  updatedAt: string;
-  analysis: string | null;
-  analyzedAt: string | null;
-  analysisMode: "mock" | "openai" | null;
-}
-
-export interface AppConfig {
-  aiMode: AiMode;
-  aiAvailable: boolean;
-  dailyLimit: number;
 }

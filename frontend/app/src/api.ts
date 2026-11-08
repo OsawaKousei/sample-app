@@ -1,28 +1,39 @@
-import type { AppConfig, Card, CardInput } from "../../../shared/board.ts";
+import type { Todo, TodoInput } from "../../../shared/board.ts";
 
-async function request<T>(path: string, options?: RequestInit): Promise<T> {
-  const response = await fetch(`/api${path}`, {
-    ...options,
-    headers: { "Content-Type": "application/json", ...options?.headers },
+// HTTP通信をここにまとめ、コンポーネントから使います。
+async function request<T>(
+  path: string,
+  method = "GET",
+  body?: unknown,
+): Promise<T> {
+  const response = await fetch(path, {
+    method,
+    headers: { "Content-Type": "application/json" },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  }).catch(() => {
+    throw new Error(
+      "APIに接続できませんでした。開発サーバーの起動を確認してください。",
+    );
   });
   if (!response.ok) {
-    const body = await response.json().catch(() => null);
-    throw new Error(
-      body?.error || `通信に失敗しました（${response.status}）。`,
-    );
+    const result = await response.json();
+    throw new Error(result.error);
   }
-  return response.status === 204 ? (undefined as T) : response.json();
+  if (response.status === 204) return undefined as T;
+  return response.json();
 }
 
 export const api = {
-  cards: () => request<{ cards: Card[] }>("/cards"),
-  config: () => request<AppConfig>("/config"),
-  save: (input: CardInput, id?: string) =>
-    request<{ card: Card }>(id ? `/cards/${id}` : "/cards", {
-      method: id ? "PUT" : "POST",
-      body: JSON.stringify(input),
-    }),
-  remove: (id: string) => request<void>(`/cards/${id}`, { method: "DELETE" }),
-  analyze: (id: string) =>
-    request<{ card: Card }>(`/cards/${id}/analyze`, { method: "POST" }),
+  list: () => request<{ todos: Todo[] }>("/api/todos"),
+  create: (input: TodoInput) =>
+    request<{ todo: Todo }>("/api/todos", "POST", input),
+  update: (id: string, input: TodoInput) =>
+    request<{ todo: Todo }>(`/api/todos/${id}`, "PUT", input),
+  remove: (id: string) => request<void>(`/api/todos/${id}`, "DELETE"),
+  generate: (goal: string) =>
+    request<{ todos: Todo[]; mode: "mock" | "openai" }>(
+      "/api/todos/generate",
+      "POST",
+      { goal },
+    ),
 };

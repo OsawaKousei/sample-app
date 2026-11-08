@@ -1,91 +1,96 @@
 # 設計とAPI
 
-## データの流れ
+## 全体の流れ
 
-```mermaid
-flowchart LR
-  U[ブラウザー / React] -->|/api への fetch| V[Vite 開発サーバー :5173]
-  V -->|プロキシ| H[Hono / Node.js :3000]
-  H --> S[(SQLite ファイル)]
-  H -->|AI_MODE=openai のみ| O[OpenAI Responses API]
+画面はReact、HTTPの受付はHono、保存はSQLite、TODOの提案はOpenAI Responses APIが担当します。
+
+```text
+ブラウザー → Reactのapi.ts → Honoのapp.ts → database.ts → SQLite
+                                         → ai.ts → OpenAI API
 ```
 
-`npm run dev` が2つの開発サーバーを起動します。Viteが `/api` をHonoに転送するので、ブラウザー側にAPIサーバーのURLやAPIキーは不要です。ビルド済みの画面はHonoからも配信できます。
+開発中はVite（5173番）が `/api` と `/healthz` をHono（3000番）へ転送します。同じURLから呼び出せるため、CORS設定は不要です。
 
-## 役割を読む順番
+バックエンドのTypeScriptはNode.js 24の標準機能で直接実行します。SQLiteも標準の `node:sqlite` を使うため、DBサーバーやネイティブアドオンのビルド環境は不要です。
 
-1. `frontend/app/src/App.tsx`：一覧を取得し、Reactのstateで検索・絞り込み・表示切り替え。
-2. `frontend/app/src/CardDialog.tsx`：フォーム、AI提案、保存・削除。
-3. `frontend/app/src/api.ts`：HTTPの送受信と利用者向けエラー。
-4. `api/app/src/app.ts`：ルート、入力チェック、AI利用制限。
-5. `api/app/src/database.ts`：SQLite操作。SQLにはプレースホルダーを使う。
-6. `api/app/src/ai.ts`：モックと実API、プロンプトの改造箇所。
-7. `shared/board.ts`：両方で使う型、カテゴリとステータス。
+## ファイルの役割
 
-TypeScriptはデータの形を説明しますが、ブラウザー以外からもAPIを呼べるため、API側の実行時チェックも必要です。バックエンドはNode.js 24のTypeScript型除去機能で実行するので、enum等の変換が必要な文法を避け、型のimportに `import type` を使います。
+| ファイル | 役割 |
+| --- | --- |
+| `frontend/app/src/App.tsx` | TODOの状態、登録・更新・削除、表示の切り替え |
+| `frontend/app/src/TodoForm.tsx` | 追加と編集のフォーム |
+| `frontend/app/src/TodoCard.tsx` | カードとステータス選択 |
+| `frontend/app/src/AiPlanner.tsx` | AIに伝える目標の入力 |
+| `frontend/app/src/api.ts` | fetchによるHTTP通信 |
+| `api/app/src/app.ts` | リクエストの受付、保存・AI処理の呼び出し |
+| `api/app/src/database.ts` | テーブル作成、CRUD、複数件保存 |
+| `api/app/src/ai.ts` | 指示文、JSON形式、サンプルと実APIの切り替え |
+| `api/app/src/server.ts` | .env読み込み、サーバー起動、ビルド済み画面の配信 |
+| `shared/board.ts` | 型と選択肢、表示名 |
 
-## API契約
+## TODOのデータ
 
-開発中のAPI直アクセス：`http://127.0.0.1:3000`。画面からは同じパスを `/api` で呼びます。レスポンスは原則JSON、エラーは `{ "error": "利用者向けメッセージ" }` です。
+| 項目 | 型・内容 |
+| --- | --- |
+| `id` | サーバーが発行するUUID |
+| `title` | タイトル。必須 |
+| `description` | 詳細。空文字も可 |
+| `theme` | テーマ。必須、自由な文字列 |
+| `priority` | `high`（高）/ `medium`（中）/ `low`（低） |
+| `status` | `todo`（未着手）/ `doing`（進行中）/ `done`（完了） |
+| `createdAt` | 作成日時。ISO形式 |
+
+TODOの作り方が手動かAIかにかかわらず、同じテーブルと操作を使います。AIの元の入力や会話履歴は保存しません。
+
+## API
 
 | メソッド | パス | 結果 |
 | --- | --- | --- |
 | GET | `/healthz` | 200 `{ "status": "ok" }` |
-| GET | `/api/config` | 200 `aiMode`, `aiAvailable`, `dailyLimit`。キーは含めない |
-| GET | `/api/cards` | 200 `{ "cards": [...] }`、更新日時の降順 |
-| GET | `/api/cards/:id` | 200 `{ "card": {...} }` |
-| POST | `/api/cards` | 201 `{ "card": {...} }` |
-| PUT | `/api/cards/:id` | 200 `{ "card": {...} }`、全編集項目を送信 |
-| DELETE | `/api/cards/:id` | 204、本文なし |
-| POST | `/api/cards/:id/analyze` | 200 `{ "card": {...} }`、分析結果を自動保存 |
+| GET | `/api/todos` | 200 `{ "todos": [...] }`、作成の新しい順 |
+| POST | `/api/todos` | 201 `{ "todo": {...} }` |
+| PUT | `/api/todos/:id` | 200 `{ "todo": {...} }` |
+| DELETE | `/api/todos/:id` | 204、本文なし |
+| POST | `/api/todos/generate` | 201 `{ "todos": [...], "mode": "openai" または "mock" }` |
 
-一覧は `q`（タイトル・説明の部分一致）、`category`、`status` を組み合わせて受け付けます。UIは取得済みカードを同じ条件で絞り込みます。
+登録・更新では以下の本文を送ります。PUTは項目全体の更新です。ステータスだけを変える場合も、現在の項目と新しいステータスをまとめて送ります。
 
 ```json
 {
-  "title": "読書記録",
-  "description": "心に残った一節を集めたい",
-  "category": "学び",
-  "status": "アイデア"
+  "title": "読みたい本を選ぶ",
+  "description": "図書館で気になる本を探す",
+  "theme": "学習",
+  "priority": "high",
+  "status": "todo"
 }
 ```
 
-- `title`：必須。前後空白を除いて1〜120文字。
-- `description`：文字列、4,000文字以内。空文字可。
-- `category`：アプリ / 暮らし / 学び / 仕事 / その他。
-- `status`：アイデア / 進行中 / 完了。
-- 不正なJSON・入力：400。未存在：404。大きすぎるリクエスト：413。
-- AI分析の競合：409。日次回数制限：429。AI障害：502。AI未設定：503。
-- 登録時にUUID、`createdAt`、`updatedAt` を付与。日付はISO 8601のUTC文字列。
+AI生成の本文：
 
-カードには `analysis`、`analyzedAt`、`analysisMode` が付き、未分析では `null`。最新1件のみ保持します。タイトル・説明変更時は分析をクリアし、カテゴリ・ステータスだけの変更では保持します。AI待機中に別画面から本文変更・削除された場合は結果を保存せず409を返します。
+```json
+{ "goal": "来月から自炊を始めたい" }
+```
 
-## データベース
+生成結果はすべて未着手として一度に保存します。SQLiteのトランザクションで、途中の保存に失敗した場合は全件取り消します。
 
-`.local/idea-board.sqlite` を初回起動で自動作成します。データはNode.js内蔵の `node:sqlite` で読み書きし、別のDBサービスは不要です。WALモードと5秒の待機時間を設定しています。
+必須項目・選択肢・JSONの形式の不備は400、対象のTODOがない場合は404、AI失敗は502、DB処理の失敗は500です。エラー本文は `{ "error": "日本語の案内" }`。APIキーや内部例外の内容は返しません。文字数、利用回数、生成件数、出力トークン数の独自上限は設けません。
 
-- `cards`：カード本体と最新の分析結果。
-- `ai_usage`：UTC日付と実API試行回数。予約を単一SQLで行い、同時リクエストでも上限を維持。
-- サンプルデータは `cards` テーブルを初めて作るときだけ投入。削除したカードは再起動しても復活しない。
-- DBパスはリポジトリルート基準。`DATABASE_PATH` で変更可。
-- スキーマの本格的なマイグレーションは教材の基本構成に含めない。項目追加では第3回の手順で既存DBの移行を追加する。
+## AIの扱い
 
-## 環境変数
+ルートの `.env` は `server.ts` がNode.js標準の `loadEnvFile` で読みます。Viteは `.env` を読み込みません。`OPENAI_API_KEY` が空なら外部通信なしのサンプル、設定済みなら実APIです。失敗時のサンプル代用や自動再試行は行いません。
 
-| 名前 | 既定値 | 説明 |
-| --- | --- | --- |
-| `AI_MODE` | `mock` | `mock` / `openai` / `disabled` |
-| `OPENAI_API_KEY` | なし | APIのみ読む。未設定でもCRUDは起動 |
-| `OPENAI_MODEL` | `gpt-4.1-mini` | 講師が利用可能性を確認して指定 |
-| `AI_DAILY_LIMIT` | `20` | 実API試行回数、整数1〜1000 |
-| `AI_MAX_OUTPUT_TOKENS` | `800` | 出力上限、整数1〜2000 |
-| `DATABASE_PATH` | `.local/idea-board.sqlite` | SQLiteの保存先 |
-| `PORT` | `3000` | APIのポート。変更時は下記も参照 |
-| `HOST` | `127.0.0.1` | ComposeのAPIでは `0.0.0.0` |
-| `API_PROXY_TARGET` | `http://127.0.0.1:3000` | Vite用。Composeでは `http://api:3000` |
+Responses APIの `instructions` に行動へ分解する指示を、`input` に目標を渡します。`text.format` のJSON Schemaで、タイトル・説明・テーマ・優先度を持つ配列を指定します。`store: false` はOpenAI側のレスポンス保存に関する指定で、SQLiteへの保存とは別です。実装形式は [OpenAI公式のStructured Outputsガイド](https://developers.openai.com/api/docs/guides/structured-outputs) を参照しています。
 
-`.env` はAPIがルートから読み込みます。既にOS環境に設定された値が優先します。Viteは `.env` を読み込まず、`VITE_` の付いたAPIキーも作成しません。APIはローカル教材用で、ブラウザーからの書き込みOriginをローカルの画面に限定します。
+## 保存と表示
 
-## テスト
+既定の保存先はルートの `.local/idea-board.sqlite` です。既存ファイル内に `todos` テーブルだけを追加し、旧版の `ideas`・`cards` はそのまま残します。旧データをTODOへ自動変換したり削除したりしません。今後列を追加する場合は `ALTER TABLE` で既存データを保持します。
 
-`npm test` でNode.js標準のテストランナーを実行。APIを実際のHTTPに載せずHonoの `app.request()` で呼び、一時DBでCRUD・永続化・競合・制限を確認します。Responses APIはSDKに偽のfetchを渡し、リクエスト形式と応答読み取りを外部通信なしで確認します。
+テーマ・優先度でのグループ化とステータスの絞り込みは、取得済みの一覧に対して `App.tsx` で行います。第3回では「重要なTODOだけをDBから取得するAPI」を新しく追加し、画面側の絞り込みとAPI側の絞り込みの違いを学びます。
+
+## 開発・確認
+
+ルートのnpm workspacesで画面とAPIを管理し、`concurrently` で同時起動します。npmスクリプトにOS固有の環境変数設定やシェルコマンドは使いません。ファイルパスは `fileURLToPath` と `resolve` で扱います。
+
+`npm run check` は型チェック・画面ビルド・自動テストです。テストはHonoの `app.request()`、一時SQLite、SDKへの偽fetchを使います。実キー・実APIは使いません。`npm run build` 後は `npm start` でビルド済み画面も3000番から配信します。
+
+通常の設定はAPIキーとモデルだけです。保存先を変える場合はAPI側の `DATABASE_PATH`（ルート基準）、APIの単独確認では `PORT` も使えます。通常の開発では3000番を使ってください。
