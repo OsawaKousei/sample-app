@@ -1,0 +1,56 @@
+x-node: &node
+  image: node:24-bookworm-slim
+  working_dir: /workspace
+  user: "${LOCAL_UID:-1000}:${LOCAL_GID:-1000}"
+  init: true
+
+services:
+  # 初回のみ: docker compose run --rm install
+  install:
+    <<: *node
+    profiles: [tools]
+    volumes:
+      - ./:/workspace
+    environment:
+      npm_config_cache: /tmp/npm-cache
+    command: npm ci
+
+  frontend:
+    <<: *node
+    volumes:
+      - ./:/workspace
+      # バックエンド用のAPIキーをViteの環境変数として読ませない
+      - /dev/null:/workspace/.env:ro
+    environment:
+      API_PROXY_TARGET: http://api:3000
+      npm_config_cache: /tmp/npm-cache
+    command: npm run dev -w frontend/app -- --host 0.0.0.0
+    ports:
+      - "127.0.0.1:5173:5173"
+    depends_on:
+      api:
+        condition: service_healthy
+
+  api:
+    <<: *node
+    volumes:
+      - ./:/workspace
+    environment:
+      HOST: 0.0.0.0
+      PORT: 3000
+      npm_config_cache: /tmp/npm-cache
+    command: npm run dev -w api/app
+    ports:
+      - "127.0.0.1:3000:3000"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:3000/healthz').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))",
+        ]
+      interval: 3s
+      timeout: 2s
+      retries: 20
+      start_period: 5s
